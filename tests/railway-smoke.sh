@@ -78,7 +78,7 @@ if [ -n "${OWNER_EMAIL:-}" ] && [ -n "${OWNER_PASSWORD_FILE:-}" ]; then
 fi
 if [ -s "$TEST_TMP/owner" ]; then
   owner_id=$(token_sub "$TEST_TMP/owner")
-  assert_eq "the owner has a profile" "1" "$(rest_as "$TEST_TMP/owner" "/rest/v1/profiles?select=id&id=eq.$owner_id" | jq length)"
+  assert_eq "the owner has a profile" "1" "$(rest_as "$TEST_TMP/owner" "/rest/v1/profiles?select=id&id=eq.$owner_id" | jq 'if type == "array" then length else -1 end')"
   NB=$(rest_as "$TEST_TMP/owner" /rest/v1/notebooks -X POST -H 'Content-Type: application/json' -H 'Prefer: return=representation' \
     --data "{\"title\":\"Railway probe $stamp\",\"user_id\":\"$owner_id\",\"generation_status\":\"pending\"}" | jq -r '.[0].id // empty')
   [ -n "$NB" ] && pass "creates a notebook" || fail "could not create a notebook"
@@ -93,12 +93,14 @@ if [ -s "$TEST_TMP/owner" ]; then
     assert_contains "process-document starts the workflow" "^200 " "$(fn_as "$TEST_TMP/owner" process-document "{\"sourceId\":\"$SRC\",\"filePath\":\"$NB/$SRC.pdf\",\"sourceType\":\"pdf\"}")"
     assert_contains "generate-notebook-content names the notebook" '^200 .*"success":true' \
       "$(fn_as "$TEST_TMP/owner" generate-notebook-content "{\"notebookId\":\"$NB\",\"filePath\":\"$NB/$SRC.pdf\",\"sourceType\":\"pdf\"}")"
+    # The workflow calls back only after its vector-store insert succeeded, so "completed" means the chunks are
+    # stored (the documents table is not readable through REST; tests/smoke.sh checks it in the database).
     assert_eq "the PDF is extracted, summarised, embedded, and called back" "completed" \
       "$(rest_wait "$TEST_TMP/owner" "/rest/v1/sources?select=processing_status&id=eq.$SRC" '.[0].processing_status' completed 300 || true)"
     assert_contains "the source holds the PDF's text" "railway probe document $stamp" "$(rest_as "$TEST_TMP/owner" "/rest/v1/sources?select=content&id=eq.$SRC")"
-    assert_eq "its chunks are in the vector store" "true" "$(rest_as "$TEST_TMP/owner" "/rest/v1/documents?select=id&metadata->>source_id=eq.$SRC" | jq 'length > 0')"
+    assert_eq "and the model's summary" "true" "$(rest_as "$TEST_TMP/owner" "/rest/v1/sources?select=summary&id=eq.$SRC" | jq '(.[0].summary // "") | length > 0')"
     assert_contains "send-chat-message reaches the chat workflow" "^200 " "$(fn_as "$TEST_TMP/owner" send-chat-message "{\"session_id\":\"$NB\",\"message\":\"What does the probe say?\"}")"
-    assert_eq "the answer is stored for the chat view" "2" "$(rest_wait "$TEST_TMP/owner" "/rest/v1/n8n_chat_histories?select=id&session_id=eq.$NB" 'length' 2 180 || true)"
+    assert_eq "the answer is stored for the chat view" "2" "$(rest_wait "$TEST_TMP/owner" "/rest/v1/n8n_chat_histories?select=id&session_id=eq.$NB" 'if type == "array" then length else -1 end' 2 180 || true)"
     TXT=$(rest_as "$TEST_TMP/owner" /rest/v1/sources -X POST -H 'Content-Type: application/json' -H 'Prefer: return=representation' \
       --data "{\"notebook_id\":\"$NB\",\"title\":\"Pasted\",\"type\":\"text\",\"content\":\"Pasted probe text\",\"processing_status\":\"processing\",\"metadata\":{}}" | jq -r '.[0].id')
     fn_as "$TEST_TMP/owner" process-additional-sources "{\"type\":\"copied-text\",\"notebookId\":\"$NB\",\"title\":\"Pasted\",\"content\":\"Pasted probe text\",\"sourceIds\":[\"$TXT\"],\"timestamp\":\"$stamp\"}" >/dev/null
