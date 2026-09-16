@@ -1,0 +1,8 @@
+{
+  "name": "insightslm-railway-runtime",
+  "private": true,
+  "description": "Runtime dependencies of the app service start-up (database client).",
+  "dependencies": {
+    "pg": "8.23.0"
+  }
+}
